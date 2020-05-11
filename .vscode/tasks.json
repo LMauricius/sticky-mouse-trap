@@ -1,0 +1,30 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+		{
+			"type": "shell",
+			"label": "g++ build active file",
+			"command": "/usr/bin/g++",
+			"args": [
+				"-g",
+                "${fileDirname}/main.cpp",
+                "-o",
+				"${workspaceFolder}/${workspaceFolderBasename}",
+				"-I",
+				"${workspaceFolder}/../../MUtilize/",
+				"-std=c++17",
+				"-lX11",
+				"-lXi",
+				"-lXrandr"
+			],
+			"options": {
+				"cwd": "/usr/bin"
+			},
+			"problemMatcher": [],
+			"group": {
+				"kind": "build",
+				"isDefault": true
+			}
+		}
+	]
+}

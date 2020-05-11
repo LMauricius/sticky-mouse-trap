@@ -8,7 +8,9 @@
 #include <MiIni.h>
 #include <circular_queue.h>
 
+#include <unistd.h>
 #include <signal.h>
+#include <pwd.h>
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -45,11 +47,8 @@ struct PtrEntry
 struct PassConfig
 {
     bool always;
-    //float strength;
-    //float slowerThan, fasterThan;
     duration<float> maxDelay, minDelay, baseDelay;
     duration<float> returnBefore;
-    //duration<float> predict;
 };
 
 /*
@@ -62,7 +61,6 @@ float cfgResistanceSlowdownExponent;
 float cfgResistanceSpeedupExponent;
 float cfgResistanceConstSpeedExponent;
 float cfgPassthroughSmoothingFactor;
-//duration<float> cfgPtrPredictSeconds = 0.2s;
 PassConfig cfgEdgePass, cfgCornerPass;
 float cfgCornerSizeFactor;
 int cfgResistanceMargins;
@@ -84,34 +82,67 @@ time_point<high_resolution_clock> touchedEdgeTime;// the time point when we touc
 time_point<high_resolution_clock> brokeFromTime;// the time point when we last broke from a monitor
 Monitor *brokeFromMonitor;// the monitor we passed FROM last time. Useful for returning to previous monitor when we miss a button or smthng.
 
-void loadConfig()
+void loadConfig(std::string cfgpath)
 {
-    std::string homepath = getenv("HOME");
-    config.open(homepath+"/.config/stick-cursor-to-screen", false);
+    /*
+    If cfgpath is empty, the config file will be searched for in the directory
+    specified by the XDG Base Directory Specification (XDG_CONFIG_HOME variable)
+	   <http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html>.
+    If XDG_CONFIG_HOME is not set, search directly in HOME/.config/stick-cursor-to-screen/.
+    If HOME isn't set either, use the structure from getpwuid() to get the home directory
+    and then search in the .config directory.
+    */
 
-    cfgPtrInputsToRemember = config.get("Movement Calculation", "NoInputsToRemember", 50);
-    cfgPtrRememberForSeconds = (duration<float>)config.get("Movement Calculation", "RememberForSeconds", 0.15);
-    cfgResistanceSlowdownExponent = config.get("Movement Calculation", "ResistanceSlowdownExponent", 4.0);
-    cfgResistanceSpeedupExponent = config.get("Movement Calculation", "ResistanceSpeedupExponent", 1.0);
-    cfgResistanceConstSpeedExponent = config.get("Movement Calculation", "ResistanceConstantSpeedExponent", 0.1);
-    cfgPassthroughSmoothingFactor = config.get("Movement Calculation", "PassthroughSmoothingFactor", 0.05);
+    if (cfgpath == "")
+    {
+        char *env;
+        if ((env = getenv("XDG_CONFIG_HOME")) != nullptr && env[0] != '\0')
+            cfgpath = std::string(env) + "/stick-cursor-to-screen/stick-cursor-to-screen.cfg";
+        else if ((env = getenv("XDG_CONFIG_DIRS")) != nullptr && env[0] != '\0')
+        {
+            cfgpath = std::string(env);
+            cfgpath = cfgpath.substr(0, cfgpath.find_first_of(':')) + "/stick-cursor-to-screen/stick-cursor-to-screen.cfg";
+        }
+        else if ((env = getenv("HOME")) != nullptr && env[0] != '\0')
+            cfgpath = std::string(env) + "/.config/stick-cursor-to-screen/stick-cursor-to-screen.cfg";
+        else
+        {
+            auto pwd = getpwuid(getuid());
+            cfgpath = std::string(pwd->pw_dir) + "/.config/stick-cursor-to-screen/stick-cursor-to-screen.cfg";
+        }
+    }
 
-    cfgCornerSizeFactor = config.get("Screen", "CornerSizeFactor", 0.1f);
-    cfgResistanceMargins = config.get("Screen", "ResistanceMargins", 1);
+    try
+    {
+        config.open(cfgpath, false);
 
-    cfgEdgePass.always = config.get("Edge Passthrough", "AllowAlways", false);
-    //cfgEdgePass.strength = config.get("Edge Passthrough", "Strength", 2000.0f);
-    cfgEdgePass.baseDelay = (duration<float>)config.get("Edge Passthrough", "BaseDelayOfSeconds", 0.4);
-    cfgEdgePass.maxDelay = (duration<float>)config.get("Edge Passthrough", "MaxDelayOfSeconds", 0.6);
-    cfgEdgePass.minDelay = (duration<float>)config.get("Edge Passthrough", "MinDelayOfSeconds", 0.0);
-    cfgEdgePass.returnBefore = (duration<float>)config.get("Edge Passthrough", "FreelyReturnBeforeSeconds", 1);
+        cfgPtrInputsToRemember = config.get("Movement Calculation", "NoInputsToRemember", 50);
+        cfgPtrRememberForSeconds = (duration<float>)config.get("Movement Calculation", "RememberForSeconds", 0.15);
+        cfgResistanceSlowdownExponent = config.get("Movement Calculation", "ResistanceSlowdownExponent", 4.0);
+        cfgResistanceSpeedupExponent = config.get("Movement Calculation", "ResistanceSpeedupExponent", 1.0);
+        cfgResistanceConstSpeedExponent = config.get("Movement Calculation", "ResistanceConstantSpeedExponent", 0.1);
+        cfgPassthroughSmoothingFactor = config.get("Movement Calculation", "PassthroughSmoothingFactor", 0.05);
 
-    cfgCornerPass.always = config.get("Corner Passthrough", "AllowAlways", false);
-    //cfgCornerPass.strength = config.get("Corner Passthrough", "Strength", 4000.0f);
-    cfgCornerPass.baseDelay = (duration<float>)config.get("Corner Passthrough", "BaseDelayOfSeconds", 0.7);
-    cfgCornerPass.maxDelay = (duration<float>)config.get("Corner Passthrough", "MaxDelayOfSeconds", 1);
-    cfgCornerPass.minDelay = (duration<float>)config.get("Corner Passthrough", "MinDelayOfSeconds", 0.0);
-    cfgCornerPass.returnBefore = (duration<float>)config.get("Corner Passthrough", "FreelyReturnBeforeSeconds", 1);
+        cfgCornerSizeFactor = config.get("Screen", "CornerSizeFactor", 0.1f);
+        cfgResistanceMargins = config.get("Screen", "ResistanceMargins", 1);
+
+        cfgEdgePass.always = config.get("Edge Passthrough", "AllowAlways", false);
+        cfgEdgePass.baseDelay = (duration<float>)config.get("Edge Passthrough", "BaseDelayOfSeconds", 0.4);
+        cfgEdgePass.maxDelay = (duration<float>)config.get("Edge Passthrough", "MaxDelayOfSeconds", 0.6);
+        cfgEdgePass.minDelay = (duration<float>)config.get("Edge Passthrough", "MinDelayOfSeconds", 0.0);
+        cfgEdgePass.returnBefore = (duration<float>)config.get("Edge Passthrough", "FreelyReturnBeforeSeconds", 1);
+
+        cfgCornerPass.always = config.get("Corner Passthrough", "AllowAlways", false);
+        cfgCornerPass.baseDelay = (duration<float>)config.get("Corner Passthrough", "BaseDelayOfSeconds", 0.7);
+        cfgCornerPass.maxDelay = (duration<float>)config.get("Corner Passthrough", "MaxDelayOfSeconds", 1);
+        cfgCornerPass.minDelay = (duration<float>)config.get("Corner Passthrough", "MinDelayOfSeconds", 0.0);
+        cfgCornerPass.returnBefore = (duration<float>)config.get("Corner Passthrough", "FreelyReturnBeforeSeconds", 1);
+    }
+    catch(const MiIni<>::FileError& e)
+    {
+        std::cerr << "Error while reading configuration: " << e.what() << '\n';
+    }
+    
 
 
     /*cfgEdgePass.always = config.get("Edge Passthrough", "AllowAlways", false);
@@ -188,24 +219,17 @@ void updateMonitorList()
     onEdge = false;
 }
 
-void movePointer(int x, int y, Window confineWindow = None)
+void movePointer(int x, int y)
 {
-    //XGrabPointer(display, rootWindow, false, PointerMotionMask, GrabModeAsync,
-    //             GrabModeAsync, confineWindow, None, CurrentTime);
     XWarpPointer(display, None, rootWindow, 0, 0, 0, 0, x, y);
-    //XUngrabPointer(display, CurrentTime);
 }
 
-Window prevPointerWindow;// the window pointer was in last call. Useful for confining the pointer to prevent flicker
-//float resistanceOvercame;
-void pointerMoved(int x, int y, double dx, double dy, Window pointerWindow = None)
+void pointerMoved(int x, int y, double dx, double dy)
 {
     // Remember the state
     PtrEntry &prev = ptrMemory[ptrMemory.size() - 1];// previous pointer state
     PtrEntry current(x, y, 0.0f);// current pointer state
     duration<float> secondsElapsed = current.moveTime - prev.moveTime;
-    //int dx = x - ptrMemory[ptrMemory.size()-1].x;
-    //int dy = y - ptrMemory[ptrMemory.size()-1].y;
 
     // calc speed
     float dis = std::sqrt(dx * dx + dy * dy);
@@ -311,7 +335,6 @@ void pointerMoved(int x, int y, double dx, double dy, Window pointerWindow = Non
             if (pass)
             {
                 onEdge = false;
-                prevPointerWindow = pointerWindow; // Remember the window pointer is in
                 brokeFromTime = current.moveTime;
                 brokeFromMonitor = currentMonitor;
                 currentMonitor = getCurrentMonitor(x, y); // find the new monitor
@@ -332,7 +355,7 @@ void pointerMoved(int x, int y, double dx, double dy, Window pointerWindow = Non
                 between the movePointer() call and actual pointer update on screen.
                 We confine the pointer in the previous window for cases when there is a fullscreen window.
                 */
-                movePointer(x, y, prevPointerWindow);
+                movePointer(x, y);
             }
             
         }
@@ -347,7 +370,7 @@ void pointerMoved(int x, int y, double dx, double dy, Window pointerWindow = Non
 int main(int argc, char **argv)
 {
     // ---Load config---
-    loadConfig();
+    loadConfig("");
 
     // ---Get display---
     if( (display = XOpenDisplay(NULL)) == NULL )
@@ -419,17 +442,13 @@ int main(int argc, char **argv)
                 // This is the event we were looking for
                 XIDeviceEvent *motionEvent = (XIDeviceEvent*)cookie->data;
 
-                //printf("Move: %6.1f, %6.1f\n", motionEvent->event_x, motionEvent->event_y);
-
                 Window childWnd, parentDummy;
                 int root_x, root_y, win_x, win_y;
                 unsigned int maskDummy;
                 XQueryPointer(display, rootWindow, &rootWindow, &childWnd,
                     &root_x, &root_y, &win_x, &win_y, &maskDummy);
 
-                //captureMoveEvent = true;
-                // handle movement
-                pointerMoved(root_x, root_y, motionEvent->event_x, motionEvent->event_y, childWnd);
+                pointerMoved(root_x, root_y, motionEvent->event_x, motionEvent->event_y);
             }
             XFreeEventData(display, cookie);
         }
@@ -437,22 +456,6 @@ int main(int argc, char **argv)
         {
             case ConfigureNotify:
                 updateMonitorList();
-                break;
-            case MotionNotify:
-                //if (captureMoveEvent)
-                //{
-                    // handle movement
-                    //pointerMoved(xevent.xmotion.x_root, xevent.xmotion.y_root);
-                    //std::cout << xevent.xmotion.x_root << "," << xevent.xmotion.y << std::endl;
-
-                    // Stop tracking events to prevent infinite loop
-                    /*if (xevent.xmotion.window)
-                    {
-                        XSelectInput(display, xevent.xmotion.window, 0);
-                        captureMoveEvent = false;
-                    }*/
-                    captureMoveEvent = false;
-                //}
                 break;
         }
     }
