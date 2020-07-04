@@ -82,34 +82,41 @@ time_point<high_resolution_clock> touchedEdgeTime;// the time point when we touc
 time_point<high_resolution_clock> brokeFromTime;// the time point when we last broke from a monitor
 Monitor *brokeFromMonitor;// the monitor we passed FROM last time. Useful for returning to previous monitor when we miss a button or smthng.
 
-void loadConfig(std::string cfgpath)
+std::string getDefaultConfigPath()
 {
     /*
-    If cfgpath is empty, the config file will be searched for in the directory
+    By default, the config file will be searched for in the directory
     specified by the XDG Base Directory Specification (XDG_CONFIG_HOME variable)
 	   <http://standards.freedesktop.org/basedir-spec/basedir-spec-latest.html>.
-    If XDG_CONFIG_HOME is not set, search directly in HOME/.config/stick-cursor-to-screen/.
+    If XDG_CONFIG_HOME is not set, search directly in HOME/.config/.
     If HOME isn't set either, use the structure from getpwuid() to get the home directory
     and then search in the .config directory.
     */
+    std::string cfgpath;
+    char *env;
+    if ((env = getenv("XDG_CONFIG_HOME")) != nullptr && env[0] != '\0')
+        cfgpath = std::string(env) + "/stick-cursor-to-screen.cfg";
+    else if ((env = getenv("XDG_CONFIG_DIRS")) != nullptr && env[0] != '\0')
+    {
+        cfgpath = std::string(env);
+        cfgpath = cfgpath.substr(0, cfgpath.find_first_of(':')) + "/stick-cursor-to-screen.cfg";
+    }
+    else if ((env = getenv("HOME")) != nullptr && env[0] != '\0')
+        cfgpath = std::string(env) + "/.config/stick-cursor-to-screen.cfg";
+    else
+    {
+        auto pwd = getpwuid(getuid());
+        cfgpath = std::string(pwd->pw_dir) + "/.config/stick-cursor-to-screen.cfg";
+    }
 
+    return cfgpath;
+}
+
+void loadConfig(std::string cfgpath)
+{
     if (cfgpath == "")
     {
-        char *env;
-        if ((env = getenv("XDG_CONFIG_HOME")) != nullptr && env[0] != '\0')
-            cfgpath = std::string(env) + "/stick-cursor-to-screen/stick-cursor-to-screen.cfg";
-        else if ((env = getenv("XDG_CONFIG_DIRS")) != nullptr && env[0] != '\0')
-        {
-            cfgpath = std::string(env);
-            cfgpath = cfgpath.substr(0, cfgpath.find_first_of(':')) + "/stick-cursor-to-screen/stick-cursor-to-screen.cfg";
-        }
-        else if ((env = getenv("HOME")) != nullptr && env[0] != '\0')
-            cfgpath = std::string(env) + "/.config/stick-cursor-to-screen/stick-cursor-to-screen.cfg";
-        else
-        {
-            auto pwd = getpwuid(getuid());
-            cfgpath = std::string(pwd->pw_dir) + "/.config/stick-cursor-to-screen/stick-cursor-to-screen.cfg";
-        }
+        cfgpath = getDefaultConfigPath();
     }
 
     try
@@ -367,6 +374,20 @@ void pointerMoved(int x, int y, double dx, double dy)
     
 }
 
+/*
+SIGNAL HANDLERS
+*/
+bool reloadCfg;
+bool running;
+void reloadCfgSignal(int)
+{
+    reloadCfg = true;
+}
+void terminateSignal(int)
+{
+    running = false;
+}
+
 int main(int argc, char **argv)
 {
     // ---Load config---
@@ -426,11 +447,21 @@ int main(int argc, char **argv)
     // notify of resolution changes
     XSelectInput(display, rootWindow, StructureNotifyMask);
 
-    // ---Handle all events---
+    // ---Signal handlers---
+    running = true;
+    reloadCfg = true;
+    signal(SIGHUP, reloadCfgSignal);
+    signal(SIGTERM, terminateSignal);
+
+    // ---Event loop---
     XEvent xevent;
-    bool captureMoveEvent;
-    while(1)
+    while(running)
     {
+        // After first load, only used on SIGHUP signal
+        if (reloadCfg)
+            loadConfig("");
+
+        // Handle next event
         XNextEvent(display, &xevent);
 
         if (XGetEventData(display, &xevent.xcookie))
