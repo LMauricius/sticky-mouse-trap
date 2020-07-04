@@ -36,12 +36,12 @@ struct PtrEntry
                                           y(y),
                                           speed(speed)
         {
-            moveTime = high_resolution_clock::now();
+            moveTimepoint = high_resolution_clock::now();
         }
 
     int x, y;
     float speed;
-    time_point<high_resolution_clock> moveTime;
+    time_point<high_resolution_clock> moveTimepoint;
 };
 
 struct PassConfig
@@ -55,11 +55,13 @@ struct PassConfig
 Config variables
 */
 MiIni config;
-int cfgPtrInputsToRemember = 10;
-duration<float> cfgPtrRememberForSeconds = 0.2s;
+bool cfgEnabled;
+int cfgPtrInputsToRemember;
+duration<float> cfgPtrRememberForSeconds;
 float cfgResistanceSlowdownExponent;
 float cfgResistanceSpeedupExponent;
 float cfgResistanceConstSpeedExponent;
+float cfgResistanceDirectionExponent;
 float cfgPassthroughSmoothingFactor;
 PassConfig cfgEdgePass, cfgCornerPass;
 float cfgCornerSizeFactor;
@@ -79,7 +81,7 @@ Resistance calculation variables
 circular_queue<PtrEntry> ptrMemory;// ptr positions and data
 bool onEdge;// are we on edge rn
 time_point<high_resolution_clock> touchedEdgeTime;// the time point when we touched the edge, to detect delay
-time_point<high_resolution_clock> brokeFromTime;// the time point when we last broke from a monitor
+time_point<high_resolution_clock> brokeFromTimepoint;// the time point when we last broke from a monitor
 Monitor *brokeFromMonitor;// the monitor we passed FROM last time. Useful for returning to previous monitor when we miss a button or smthng.
 
 std::string getDefaultConfigPath()
@@ -123,12 +125,7 @@ void loadConfig(std::string cfgpath)
     {
         config.open(cfgpath, false);
 
-        cfgPtrInputsToRemember = config.get("Movement Calculation", "NoInputsToRemember", 50);
-        cfgPtrRememberForSeconds = (duration<float>)config.get("Movement Calculation", "RememberForSeconds", 0.15);
-        cfgResistanceSlowdownExponent = config.get("Movement Calculation", "ResistanceSlowdownExponent", 4.0);
-        cfgResistanceSpeedupExponent = config.get("Movement Calculation", "ResistanceSpeedupExponent", 1.0);
-        cfgResistanceConstSpeedExponent = config.get("Movement Calculation", "ResistanceConstantSpeedExponent", 0.1);
-        cfgPassthroughSmoothingFactor = config.get("Movement Calculation", "PassthroughSmoothingFactor", 0.05);
+        cfgEnabled = config.get("General", "Enabled", true);
 
         cfgCornerSizeFactor = config.get("Screen", "CornerSizeFactor", 0.1f);
         cfgResistanceMargins = config.get("Screen", "ResistanceMargins", 1);
@@ -144,32 +141,24 @@ void loadConfig(std::string cfgpath)
         cfgCornerPass.maxDelay = (duration<float>)config.get("Corner Passthrough", "MaxDelayOfSeconds", 1);
         cfgCornerPass.minDelay = (duration<float>)config.get("Corner Passthrough", "MinDelayOfSeconds", 0.0);
         cfgCornerPass.returnBefore = (duration<float>)config.get("Corner Passthrough", "FreelyReturnBeforeSeconds", 1);
+
+        cfgPtrInputsToRemember = config.get("Movement Calculation", "NoInputsToRemember", 50);
+        cfgPtrRememberForSeconds = (duration<float>)config.get("Movement Calculation", "RememberForSeconds", 0.15);
+        cfgResistanceSlowdownExponent = config.get("Movement Calculation", "ResistanceSlowdownExponent", 4.0);
+        cfgResistanceSpeedupExponent = config.get("Movement Calculation", "ResistanceSpeedupExponent", 1.0);
+        cfgResistanceConstSpeedExponent = config.get("Movement Calculation", "ResistanceConstantSpeedExponent", 0.1);
+        cfgResistanceDirectionExponent = config.get("Movement Calculation", "ResistanceByDirectionExponent", 1.0);
+        cfgPassthroughSmoothingFactor = config.get("Movement Calculation", "PassthroughSmoothingFactor", 0.05);
     }
     catch(const MiIni<>::FileError& e)
     {
         std::cerr << "Error while reading configuration: " << e.what() << '\n';
     }
-    
-
-
-    /*cfgEdgePass.always = config.get("Edge Passthrough", "AllowAlways", false);
-    cfgEdgePass.slowerThan = config.get("Edge Passthrough", "WhenSlowerThanUnitsPerSec", 300);
-    cfgEdgePass.fasterThan = config.get("Edge Passthrough", "WhenFasterThanUnitsPerSec", 6500);
-    cfgEdgePass.maxDelay = (duration<float>)config.get("Edge Passthrough", "AfterDelayOfSeconds", 0.6);
-    cfgEdgePass.returnBefore = (duration<float>)config.get("Edge Passthrough", "ReturnBeforeSeconds", 1.5);
-    cfgEdgePass.predict = (duration<float>)config.get("Edge Passthrough", "PredictSeconds", 0.05);
-
-    cfgCornerPass.always = config.get("Corner Passthrough", "AllowAlways", false);
-    cfgCornerPass.slowerThan = config.get("Corner Passthrough", "WhenSlowerThanUnitsPerSec", 50);
-    cfgCornerPass.fasterThan = config.get("Corner Passthrough", "WhenFasterThanUnitsPerSec", 13000);
-    cfgCornerPass.maxDelay = (duration<float>)config.get("Corner Passthrough", "AfterDelayOfSeconds", 1.2);
-    cfgCornerPass.returnBefore = (duration<float>)config.get("Corner Passthrough", "ReturnBeforeSeconds", 1.5);
-    cfgCornerPass.predict = (duration<float>)config.get("Corner Passthrough", "PredictSeconds", 0.05);*/
 
     config.sync();// In case the config didn't exist before
 }
 
-Monitor* getCurrentMonitor(int x, int y)
+Monitor* getMonitorAt(int x, int y)
 {
     Monitor *monitor = nullptr;
     for (auto& m : monitors)
@@ -221,7 +210,7 @@ void updateMonitorList()
         ptrMemory.emplace_back(root_x, root_y, 0);
 
     // Find the monitor on which we are rn
-    currentMonitor = getCurrentMonitor(root_x, root_y);
+    currentMonitor = getMonitorAt(root_x, root_y);
     brokeFromMonitor = nullptr;
     onEdge = false;
 }
@@ -231,12 +220,12 @@ void movePointer(int x, int y)
     XWarpPointer(display, None, rootWindow, 0, 0, 0, 0, x, y);
 }
 
-void pointerMoved(int x, int y, double dx, double dy)
+void pointerMoved(Time time, int x, int y, double dx, double dy)
 {
     // Remember the state
     PtrEntry &prev = ptrMemory[ptrMemory.size() - 1];// previous pointer state
     PtrEntry current(x, y, 0.0f);// current pointer state
-    duration<float> secondsElapsed = current.moveTime - prev.moveTime;
+    duration<float> secondsElapsed = current.moveTimepoint - prev.moveTimepoint;
 
     // calc speed
     float dis = std::sqrt(dx * dx + dy * dy);
@@ -253,7 +242,7 @@ void pointerMoved(int x, int y, double dx, double dy)
 
     for (int i = 0; i < ptrMemory.size()-1; i++)
     {
-        auto timeDiff = current.moveTime - ptrMemory[i].moveTime;
+        auto timeDiff = current.moveTimepoint - ptrMemory[i].moveTimepoint;
 
         if (timeDiff <= cfgPtrRememberForSeconds)
         {
@@ -263,72 +252,80 @@ void pointerMoved(int x, int y, double dx, double dy)
     }
     speed2 = current.speed;
 
-    // Calc resistance factor for making it harder to pass
-    float resistanceFactor;
-    if (speed1 > 0 && speed2 > 0)
-    {
-        // If we are slowing down, resistance must be higher (prolly trying to hit a button)
-        resistanceFactor = speed1 / speed2;
-
-        if (speed1 > speed2)
-            resistanceFactor = std::pow(resistanceFactor, cfgResistanceSlowdownExponent);
-        else
-            resistanceFactor = std::pow(resistanceFactor, cfgResistanceSpeedupExponent);
-
-        resistanceFactor *= std::pow(std::abs(speed1 - speed2) / std::max(speed1, speed2), cfgResistanceConstSpeedExponent);
-        resistanceFactor = (resistanceFactor - cfgPassthroughSmoothingFactor) / (1.0 - cfgPassthroughSmoothingFactor);
-    }
-    else
-        resistanceFactor = 1;
-
     //printf("Current: %9.2f, first: %9.2f, second: %9.2f, Res: %4.2f\n", dis, speed1, speed2, resistanceFactor);
     
     // Do nothing if we are outside any monitor
     if (currentMonitor)
     {
         // If the pointer tries to exit the monitor
-        if (!currentMonitor->contains(x, y, cfgResistanceMargins+1))
+        if (!currentMonitor->contains(x, y, cfgResistanceMargins))
         {
-            Monitor *newMonitor = getCurrentMonitor(x, y);
+            Monitor *newMonitor = getMonitorAt(x + cfgResistanceMargins * dx, y + cfgResistanceMargins * dy);
             PassConfig *passCfg;
             bool pass;
 
-            // Corner or edge? 
+            // Find on which corner/edge we are rn
             bool onHorCorner = (x < currentMonitor->x + currentMonitor->w * cfgCornerSizeFactor) ||
                              (x > currentMonitor->x + currentMonitor->w * (1.0f - cfgCornerSizeFactor));
             bool onVerCorner = (y < currentMonitor->y + currentMonitor->h * cfgCornerSizeFactor) ||
                              (y > currentMonitor->y + currentMonitor->h * (1.0f - cfgCornerSizeFactor));
+            bool onVerEdge = (y >= currentMonitor->y && y <= currentMonitor->y + currentMonitor->h);
+            bool onHorEdge = (x >= currentMonitor->x && x <= currentMonitor->x + currentMonitor->w);
 
             if (onHorCorner && onVerCorner)
                 passCfg = &cfgCornerPass;
             else
                 passCfg = &cfgEdgePass;
 
-            // Should we let the cursor pass?
+            // Should we ignore the resistance altogether?
             if (passCfg->always ||
-                (newMonitor == brokeFromMonitor && (current.moveTime - brokeFromTime) < passCfg->returnBefore))
+                (newMonitor == brokeFromMonitor && (current.moveTimepoint - brokeFromTimepoint) < passCfg->returnBefore))
             {
                 pass = true;
             }
             else
             {
+                // keep track of the time if we collided with the edge right now
                 if (!onEdge)
                 {
                     onEdge = true;
-                    touchedEdgeTime = current.moveTime;
-                    //resistanceOvercame = 0.0;
+                    touchedEdgeTime = current.moveTimepoint;
                 }
 
-                //resistanceOvercame += dis;
-                auto adjustedDelay = (
-                    std::max(
-                        std::min(
-                            passCfg->baseDelay * resistanceFactor,
-                            passCfg->maxDelay),
-                        passCfg->minDelay)
-                    );
+                // Calc resistance factor for making it harder to pass
+                float resistanceFactor;
+                if (speed1 > 0 && speed2 > 0)
+                {
+                    // If we are slowing down, resistance must be higher (prolly trying to hit a button)
+                    resistanceFactor = speed1 / speed2;
 
-                if ((current.moveTime - touchedEdgeTime) > adjustedDelay) //resistanceOvercame >= passCfg->strength*resistanceFactor ||
+                    if (speed1 > speed2)
+                        resistanceFactor = std::pow(resistanceFactor, cfgResistanceSlowdownExponent);
+                    else
+                        resistanceFactor = std::pow(resistanceFactor, cfgResistanceSpeedupExponent);
+
+                    resistanceFactor *= std::pow(std::abs(speed1 - speed2) / std::max(speed1, speed2), cfgResistanceConstSpeedExponent);
+                
+                    if (onVerEdge && dx != 0.0)
+                        resistanceFactor *= std::pow(speed2 / std::abs(dx), cfgResistanceDirectionExponent);
+                    else if (onHorEdge && dy != 0.0)
+                        resistanceFactor *= std::pow(speed2 / std::abs(dy), cfgResistanceDirectionExponent);
+                }
+                else
+                {
+                    resistanceFactor = 1;
+                }
+                resistanceFactor = (resistanceFactor - cfgPassthroughSmoothingFactor) / (1.0 - cfgPassthroughSmoothingFactor);
+
+                // adjust the base delay by the factor
+                auto adjustedDelay = (std::max(
+                    std::min(
+                        passCfg->baseDelay * resistanceFactor,
+                        passCfg->maxDelay),
+                    passCfg->minDelay));
+
+                // check how long have we been pushing through the edge and passthrough if it's longer than the expected delay
+                if ((current.moveTimepoint - touchedEdgeTime) > adjustedDelay)
                 {
                     pass = true;
                 }
@@ -336,15 +333,14 @@ void pointerMoved(int x, int y, double dx, double dy)
                 {
                     pass = false;
                 }
-                
             }
 
             if (pass)
             {
                 onEdge = false;
-                brokeFromTime = current.moveTime;
+                brokeFromTimepoint = current.moveTimepoint;
                 brokeFromMonitor = currentMonitor;
-                currentMonitor = getCurrentMonitor(x, y); // find the new monitor
+                currentMonitor = newMonitor;
             }
             else
             {
@@ -366,10 +362,14 @@ void pointerMoved(int x, int y, double dx, double dy)
             }
             
         }
+        else if (currentMonitor->contains(x, y, cfgResistanceMargins+1))
+        {
+            onEdge = false;
+        }
     }
     else
     {
-        currentMonitor = getCurrentMonitor(x, y);
+        currentMonitor = getMonitorAt(x, y);
     }
     
 }
@@ -464,7 +464,8 @@ int main(int argc, char **argv)
         // Handle next event
         XNextEvent(display, &xevent);
 
-        if (XGetEventData(display, &xevent.xcookie))
+        // Skip this completely if sticky edges aren't enabled
+        if (cfgEnabled && XGetEventData(display, &xevent.xcookie))
         {
             XGenericEventCookie *cookie = &xevent.xcookie;
             
@@ -479,7 +480,11 @@ int main(int argc, char **argv)
                 XQueryPointer(display, rootWindow, &rootWindow, &childWnd,
                     &root_x, &root_y, &win_x, &win_y, &maskDummy);
 
-                pointerMoved(root_x, root_y, motionEvent->event_x, motionEvent->event_y);
+                pointerMoved(motionEvent->time, root_x, root_y, 
+                    motionEvent->event_x, motionEvent->event_y);
+/*
+                pointerMoved(motionEvent->time, root_x + motionEvent->event_x, root_y + motionEvent->event_y, 
+                    motionEvent->event_x, motionEvent->event_y);*/
             }
             XFreeEventData(display, cookie);
         }
@@ -488,7 +493,9 @@ int main(int argc, char **argv)
             case ConfigureNotify:
                 updateMonitorList();
                 break;
-        }
+            default:
+                XFlush(display);// flush possible events caused by movePointer after we handled the movement
+            }
     }
 
     return 0;
