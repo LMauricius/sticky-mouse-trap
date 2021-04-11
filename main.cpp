@@ -11,6 +11,10 @@
 #include <unistd.h>
 #include <signal.h>
 #include <pwd.h>
+#include <linux/limits.h>
+
+#include <sys/inotify.h>
+#include <poll.h>
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -26,7 +30,7 @@ struct Monitor
 
     bool contains(int xpos, int ypos, int margin = 0)
     {
-        return (xpos >= x + margin && xpos <= (x + w - margin) && ypos >= y + margin && ypos <= (y + h - margin));
+        return (xpos >= x + margin && xpos < (x + w - margin) && ypos >= y + margin && ypos < (y + h - margin));
     }
 };
 
@@ -54,6 +58,8 @@ struct PassConfig
 /*
 Config variables
 */
+std::string cfgPath;
+bool cfgSavedByMyself;
 MiIni config;
 bool cfgEnabled;
 int cfgPtrInputsToRemember;
@@ -68,6 +74,13 @@ float cfgCornerSizeFactor;
 int cfgResistanceMargins;
 
 /*
+Config monitor variables
+*/
+int inotifyFD;
+int inotifyCfgW;
+
+
+/*
 Display variables
 */
 Display *display;// our display
@@ -80,7 +93,8 @@ Resistance calculation variables
 */
 circular_queue<PtrEntry> ptrMemory;// ptr positions and data
 bool onEdge;// are we on edge rn
-time_point<high_resolution_clock> touchedEdgeTime;// the time point when we touched the edge, to detect delay
+PassConfig *lastPassCfg;
+time_point<high_resolution_clock> touchedEdgeTime;   // the time point when we touched the edge, to detect delay
 time_point<high_resolution_clock> brokeFromTimepoint;// the time point when we last broke from a monitor
 Monitor *brokeFromMonitor;// the monitor we passed FROM last time. Useful for returning to previous monitor when we miss a button or smthng.
 
@@ -94,36 +108,42 @@ std::string getDefaultConfigPath()
     If HOME isn't set either, use the structure from getpwuid() to get the home directory
     and then search in the .config directory.
     */
-    std::string cfgpath;
+    std::string cfgPath;
     char *env;
     if ((env = getenv("XDG_CONFIG_HOME")) != nullptr && env[0] != '\0')
-        cfgpath = std::string(env) + "/stick-cursor-to-screen.cfg";
+        cfgPath = std::string(env) + "/stick-cursor-to-screen.cfg";
     else if ((env = getenv("XDG_CONFIG_DIRS")) != nullptr && env[0] != '\0')
     {
-        cfgpath = std::string(env);
-        cfgpath = cfgpath.substr(0, cfgpath.find_first_of(':')) + "/stick-cursor-to-screen.cfg";
+        cfgPath = std::string(env);
+        cfgPath = cfgPath.substr(0, cfgPath.find_first_of(':')) + "/stick-cursor-to-screen.cfg";
     }
     else if ((env = getenv("HOME")) != nullptr && env[0] != '\0')
-        cfgpath = std::string(env) + "/.config/stick-cursor-to-screen.cfg";
+        cfgPath = std::string(env) + "/.config/stick-cursor-to-screen.cfg";
     else
     {
         auto pwd = getpwuid(getuid());
-        cfgpath = std::string(pwd->pw_dir) + "/.config/stick-cursor-to-screen.cfg";
+        cfgPath = std::string(pwd->pw_dir) + "/.config/stick-cursor-to-screen.cfg";
     }
 
-    return cfgpath;
+    return cfgPath;
 }
 
-void loadConfig(std::string cfgpath)
+void loadConfig()
 {
-    if (cfgpath == "")
+    if (cfgPath == "")
     {
-        cfgpath = getDefaultConfigPath();
+        cfgPath = getDefaultConfigPath();
     }
+
+    std::cout << "Loading config " << cfgPath << std::endl;
+
+    // Remove old watch (to prevent 'infinite loop' of config reloading)
+    if (inotifyCfgW != -1)
+        inotify_rm_watch(inotifyFD, inotifyCfgW);
 
     try
     {
-        config.open(cfgpath, false);
+        config.open(cfgPath, false);
 
         cfgEnabled = config.get("General", "Enabled", true);
 
@@ -156,6 +176,17 @@ void loadConfig(std::string cfgpath)
     }
 
     config.sync();// In case the config didn't exist before
+    cfgSavedByMyself = true;// Needed to skip the file change notification
+
+    // Add config modification watch
+    if (inotifyFD != -1)
+    {
+        inotifyCfgW = inotify_add_watch(inotifyFD, cfgPath.c_str(), IN_CLOSE_WRITE);
+
+        if (inotifyCfgW == -1)
+            std::cerr << "Error in inotify_add_watch(). Config '" << cfgPath <<
+                "' will not be auto-reloaded when changed." << std::endl;
+    }
 }
 
 Monitor* getMonitorAt(int x, int y)
@@ -269,8 +300,8 @@ void pointerMoved(Time time, int x, int y, double dx, double dy)
                              (x > currentMonitor->x + currentMonitor->w * (1.0f - cfgCornerSizeFactor));
             bool onVerCorner = (y < currentMonitor->y + currentMonitor->h * cfgCornerSizeFactor) ||
                              (y > currentMonitor->y + currentMonitor->h * (1.0f - cfgCornerSizeFactor));
-            bool onVerEdge = (y >= currentMonitor->y && y <= currentMonitor->y + currentMonitor->h);
-            bool onHorEdge = (x >= currentMonitor->x && x <= currentMonitor->x + currentMonitor->w);
+            bool onVerEdge = (y >= currentMonitor->y && y < currentMonitor->y + currentMonitor->h);
+            bool onHorEdge = (x >= currentMonitor->x && x < currentMonitor->x + currentMonitor->w);
 
             if (onHorCorner && onVerCorner)
                 passCfg = &cfgCornerPass;
@@ -279,14 +310,15 @@ void pointerMoved(Time time, int x, int y, double dx, double dy)
 
             // Should we ignore the resistance altogether?
             if (passCfg->always ||
-                (newMonitor == brokeFromMonitor && (current.moveTimepoint - brokeFromTimepoint) < passCfg->returnBefore))
+                (newMonitor == brokeFromMonitor && 
+                (current.moveTimepoint - brokeFromTimepoint) < passCfg->returnBefore))
             {
                 pass = true;
             }
             else
             {
                 // keep track of the time if we collided with the edge right now
-                if (!onEdge)
+                if (!onEdge || passCfg != lastPassCfg)
                 {
                     onEdge = true;
                     touchedEdgeTime = current.moveTimepoint;
@@ -334,6 +366,7 @@ void pointerMoved(Time time, int x, int y, double dx, double dy)
                     pass = false;
                 }
             }
+            lastPassCfg = passCfg;
 
             if (pass)
             {
@@ -348,10 +381,10 @@ void pointerMoved(Time time, int x, int y, double dx, double dy)
                     x = currentMonitor->x + cfgResistanceMargins;
                 if (y <= currentMonitor->y + cfgResistanceMargins && dy <= 0)
                     y = currentMonitor->y + cfgResistanceMargins;
-                if (x >= currentMonitor->x + currentMonitor->w - cfgResistanceMargins && dx >= 0)
-                    x = currentMonitor->x + currentMonitor->w - cfgResistanceMargins;
-                if (y >= currentMonitor->y + currentMonitor->h && dy >= 0)
-                    y = currentMonitor->y + currentMonitor->h - cfgResistanceMargins;
+                if (x > currentMonitor->x + currentMonitor->w - cfgResistanceMargins && dx >= 0)
+                    x = currentMonitor->x + currentMonitor->w - cfgResistanceMargins - 1;
+                if (y > currentMonitor->y + currentMonitor->h && dy >= 0)
+                    y = currentMonitor->y + currentMonitor->h - cfgResistanceMargins - 1;
 
                 /*
                 Manually setting the position causes the pointer to 'flicker' because of the delay
@@ -390,8 +423,25 @@ void terminateSignal(int)
 
 int main(int argc, char **argv)
 {
+    // ---Read arguments---
+    if (argc >= 2)
+        cfgPath = argv[1];
+
+    // ---Prepare inotify---
+    inotifyFD = inotify_init();
+    if (inotifyFD == -1)
+        std::cerr << "Error in inotify_init(). Config will not be auto-reloaded when changed." << std::endl;
+
+    inotifyCfgW = -1;// init value for no watch
+
+    const int inotifyBufSize = sizeof(inotify_event) + PATH_MAX + 1;
+    char inotifyBuf[inotifyBufSize];
+    pollfd inotifyPollFD;// should be an array, but we only need one
+    inotifyPollFD.fd = inotifyFD;
+    inotifyPollFD.events = POLLIN;
+
     // ---Load config---
-    loadConfig("");
+    loadConfig();
 
     // ---Get display---
     if( (display = XOpenDisplay(NULL)) == NULL )
@@ -449,7 +499,7 @@ int main(int argc, char **argv)
 
     // ---Signal handlers---
     running = true;
-    reloadCfg = true;
+    reloadCfg = false;
     signal(SIGHUP, reloadCfgSignal);
     signal(SIGTERM, terminateSignal);
 
@@ -457,10 +507,39 @@ int main(int argc, char **argv)
     XEvent xevent;
     while(running)
     {
-        // After first load, only used on SIGHUP signal
+        // After first load, only used on SIGHUP signal or file change
         if (reloadCfg)
-            loadConfig("");
+        {
+            reloadCfg = false;
+            std::cout << "Received signal for reloading config..." << std::endl;
+            loadConfig();
+        }
 
+        // Check for config change
+        bool cfgChanged = false;
+
+        if (poll(&inotifyPollFD, 1, 0) > 0 && inotifyPollFD.revents == POLLIN)
+        {
+            int numRead = read(inotifyFD, &inotifyBuf, inotifyBufSize);
+            int pos = 0;
+            while (pos < numRead)
+            {
+                inotify_event *ev = (inotify_event *)(&inotifyBuf + pos);
+                if (ev->wd == inotifyCfgW && !cfgSavedByMyself)
+                {// File has been changed
+                    cfgChanged = true;
+                }
+                pos += sizeof(inotify_event) + ev->len;
+            }
+            cfgSavedByMyself = false;
+        }
+
+        if (cfgChanged)
+        {
+            std::cout << "Config file changed..." << std::endl;
+            loadConfig();
+        }
+        
         // Handle next event
         XNextEvent(display, &xevent);
 
@@ -497,6 +576,10 @@ int main(int argc, char **argv)
                 XFlush(display);// flush possible events caused by movePointer after we handled the movement
             }
     }
+
+    // --Clean up---
+    if (inotifyCfgW != -1)
+        inotify_rm_watch(inotifyFD, inotifyCfgW);
 
     return 0;
 }
