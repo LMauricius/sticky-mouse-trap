@@ -10,7 +10,7 @@ file(
 
 # Target 
 add_executable(sticky-mouse-trap ${SOURCES})
-target_include_directories(sticky-mouse-trap PUBLIC "./deps/MUtilize")
+target_include_directories(sticky-mouse-trap PUBLIC "./dependencies/MUtilize")
 target_link_libraries(sticky-mouse-trap PUBLIC "X11" "Xi" "Xrandr")
 
 # Install
