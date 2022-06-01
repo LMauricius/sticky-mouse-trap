@@ -6,6 +6,9 @@ Windows has this feature for the corners, while few Linux DEs have it, so workin
 # stick-cursor-to-screen
 The name of the repo from my less creative days.
 
+# Configuration editing
+The configuration file is `sticky-mouse-trap.cfg`. It should be stored somewhere in the `~/.config/` directory but it's distro-dependant. Launch the program in terminal to find out where the configuration is stored. You can edit the config while the program is running and it should pick up the changes. If it doesn't, save the config again or send the `SIGHUP` signal to the program.
+
 # Building from scratch
 Just use CMake to build after installing the dependencies.
 
