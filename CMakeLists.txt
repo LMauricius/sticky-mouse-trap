@@ -4,8 +4,8 @@ cmake_minimum_required(VERSION 3.0.0)
 file(
     GLOB_RECURSE
     SOURCES
-    "./*.h"
-    "./*.cpp"
+    "./src/*.h"
+    "./src/*.cpp"
 )
 
 # Target 

@@ -26,7 +26,8 @@ using namespace std::chrono;
 
 struct Monitor
 {
-    int x, y, w, h;
+    int x, y;
+    unsigned int w, h;
 
     bool contains(int xpos, int ypos, int margin = 0)
     {
@@ -60,7 +61,7 @@ Config variables
 */
 std::string cfgPath;
 bool cfgSavedByMyself;
-MiIni config;
+MiIni<std::string> config;
 bool cfgEnabled;
 int cfgPtrInputsToRemember;
 duration<float> cfgPtrRememberForSeconds;
@@ -214,7 +215,7 @@ void updateMonitorList()
         XRRCrtcInfo *crtc_info = XRRGetCrtcInfo( display, res, res->crtcs[j] );
         if(crtc_info->noutput)
         {
-            monitors.push_back({crtc_info->x,
+            monitors.push_back(Monitor{crtc_info->x,
                                 crtc_info->y,
                                 crtc_info->width,
                                 crtc_info->height});
