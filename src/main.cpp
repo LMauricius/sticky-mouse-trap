@@ -112,18 +112,18 @@ std::string getDefaultConfigPath()
     std::string cfgPath;
     char *env;
     if ((env = getenv("XDG_CONFIG_HOME")) != nullptr && env[0] != '\0')
-        cfgPath = std::string(env) + "/stick-cursor-to-screen.cfg";
+        cfgPath = std::string(env) + "/sticky-mouse-trap.cfg";
     else if ((env = getenv("XDG_CONFIG_DIRS")) != nullptr && env[0] != '\0')
     {
         cfgPath = std::string(env);
-        cfgPath = cfgPath.substr(0, cfgPath.find_first_of(':')) + "/stick-cursor-to-screen.cfg";
+        cfgPath = cfgPath.substr(0, cfgPath.find_first_of(':')) + "/sticky-mouse-trap.cfg";
     }
     else if ((env = getenv("HOME")) != nullptr && env[0] != '\0')
-        cfgPath = std::string(env) + "/.config/stick-cursor-to-screen.cfg";
+        cfgPath = std::string(env) + "/.config/sticky-mouse-trap.cfg";
     else
     {
         auto pwd = getpwuid(getuid());
-        cfgPath = std::string(pwd->pw_dir) + "/.config/stick-cursor-to-screen.cfg";
+        cfgPath = std::string(pwd->pw_dir) + "/.config/sticky-mouse-trap.cfg";
     }
 
     return cfgPath;
