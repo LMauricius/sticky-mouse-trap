@@ -13,16 +13,19 @@ The configuration file is `sticky-mouse-trap.cfg`. It should be stored somewhere
 Just use CMake to build after installing the dependencies.
 
 # Dependencies
-The only dependencies are X11's XInput and Xrandr headers. They an be found in `libxi` and `librandr` development packages. On ubuntu-based systems do this:
+The header-only utilities library `MUtilize` is downloaded automatically by CMake.
 
-```
-sudo apt-get install libxi-dev
-sudo apt-get install libxrandr-dev
-```
+The only other dependencies are X11's XInput and Xrandr headers.
+
+* On Ubuntu, they an be found in `libxi` and `librandr` development packages:  
+`sudo apt-get install libxi-dev libxrandr-dev`
+* On Fedora, the equivalent is  
+`sudo dnf install libXi-devel libXrandr-devel`
 
 On other systems find the equivalent packages that hold headers:
+
 ```
-/usr/include/X11/extensions/XInput.h
-/usr/include/X11/extensions/XInput2.h
-/usr/include/X11/extensions/Xrandr.h
+/usr/include/X11/extensions/XInput.h  
+/usr/include/X11/extensions/XInput2.h  
+/usr/include/X11/extensions/Xrandr.h  
 ```

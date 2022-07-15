@@ -8,6 +8,8 @@ file(
     "./src/*.cpp"
 )
 
+add_subdirectory(dependencies)
+
 # Target 
 add_executable(sticky-mouse-trap ${SOURCES})
 target_include_directories(sticky-mouse-trap PUBLIC "./dependencies/MUtilize")
