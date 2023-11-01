@@ -34,11 +34,13 @@ struct Monitor {
 };
 
 struct PtrEntry {
-    PtrEntry(int x, int y, float speed) : x(x), y(y), speed(speed) {
+    PtrEntry(int x, int y, float speed, float dx, float dy)
+        : x(x), y(y), speed(speed), dx(dx), dy(dy) {
         moveTimepoint = high_resolution_clock::now();
     }
 
     int x, y;
+    float dx, dy;
     float speed;
     time_point<high_resolution_clock> moveTimepoint;
 };
@@ -266,7 +268,7 @@ void updateMonitorList() {
 
     ptrMemory.clear();
     for (int i = 0; i < cfgPtrInputsToRemember; i++)
-        ptrMemory.emplace_back(root_x, root_y, 0);
+        ptrMemory.emplace_back(root_x, root_y, 0, 0, 0);
 
     // Find the monitor on which we are rn
     currentMonitor = getMonitorAt(root_x, root_y);
@@ -324,13 +326,14 @@ void unconfinePointer() {
     }
 }
 
-void pointerMoved(Time time, int x, int y, double dx, double dy) {
+float ptrSpeed1 = 0.0f, ptrSpeed2 = 0.0f;
+void pointerSpeedChanged(Time time, int x, int y, double dx, double dy) {
     // store time
     lastPtrMoveX11Time = time;
 
     // Remember the state
     PtrEntry &prev = ptrMemory[ptrMemory.size() - 1]; // previous pointer state
-    PtrEntry current(x, y, 0.0f);                     // current pointer state
+    PtrEntry current(x, y, 0.0f, dx, dy);             // current pointer state
     duration<float> secondsElapsed = current.moveTimepoint - prev.moveTimepoint;
 
     // calc speed
@@ -344,27 +347,36 @@ void pointerMoved(Time time, int x, int y, double dx, double dy) {
 
     // Calc 2 average speeds to determine if we are accelerating or slowing
     // down, and use the difference in further calcs
-    float speed1 = 0.0f, speed2 = 0.0f;
+    ptrSpeed1 = 0.0f;
+    ptrSpeed2 = 0.0f;
 
     for (int i = 0; i < ptrMemory.size() - 1; i++) {
         auto timeDiff = current.moveTimepoint - ptrMemory[i].moveTimepoint;
 
         if (timeDiff <= cfgPtrRememberForSeconds) {
-            speed1 = ptrMemory[i].speed;
+            ptrSpeed1 = ptrMemory[i].speed;
             break;
         }
     }
-    speed2 = current.speed;
+    ptrSpeed2 = current.speed;
 
     // printf("Current: %9.2f, first: %9.2f, second: %9.2f, Res: %4.2f\n", dis,
-    // speed1, speed2, resistanceFactor);
+    // ptrSpeed1, ptrSpeed2, resistanceFactor);
+}
+
+void pointerPositionChanged(Time time, int x, int y) {
 
     // Do nothing if we are outside any monitor
     if (currentMonitor) {
         // If the pointer tries to exit the monitor
         if (!currentMonitor->contains(x, y, cfgResistanceMargins)) {
+            const auto &current = ptrMemory.back();
+
             Monitor *newMonitor =
-                getMonitorAt(x + cfgResistanceMargins * dx, y + cfgResistanceMargins * dy);
+                getMonitorAt(x + cfgResistanceMargins *
+                                     ((x > currentMonitor->x + currentMonitor->w / 2) ? 1 : -1),
+                             y + cfgResistanceMargins *
+                                     ((y > currentMonitor->y + currentMonitor->h / 2) ? 1 : -1));
             PassConfig *passCfg;
             bool pass;
 
@@ -397,27 +409,27 @@ void pointerMoved(Time time, int x, int y, double dx, double dy) {
 
                 // Calc resistance factor for making it harder to pass
                 float resistanceFactor;
-                if (speed1 > 0 && speed2 > 0) {
+                if (ptrSpeed1 > 0 && ptrSpeed2 > 0) {
                     // If we are slowing down, resistance must be higher (prolly
                     // trying to hit a button)
-                    resistanceFactor = speed1 / speed2;
+                    resistanceFactor = ptrSpeed1 / ptrSpeed2;
 
-                    if (speed1 > speed2)
+                    if (ptrSpeed1 > ptrSpeed2)
                         resistanceFactor =
                             std::pow(resistanceFactor, cfgResistanceSlowdownExponent);
                     else
                         resistanceFactor = std::pow(resistanceFactor, cfgResistanceSpeedupExponent);
 
                     resistanceFactor *=
-                        std::pow(std::abs(speed1 - speed2) / std::max(speed1, speed2),
+                        std::pow(std::abs(ptrSpeed1 - ptrSpeed2) / std::max(ptrSpeed1, ptrSpeed2),
                                  cfgResistanceConstSpeedExponent);
 
-                    if (onVerEdge && dx != 0.0)
-                        resistanceFactor *=
-                            std::pow(speed2 / std::abs(dx), cfgResistanceDirectionExponent);
-                    else if (onHorEdge && dy != 0.0)
-                        resistanceFactor *=
-                            std::pow(speed2 / std::abs(dy), cfgResistanceDirectionExponent);
+                    if (onVerEdge && current.dx != 0.0)
+                        resistanceFactor *= std::pow(ptrSpeed2 / std::abs(current.dx),
+                                                     cfgResistanceDirectionExponent);
+                    else if (onHorEdge && current.dy != 0.0)
+                        resistanceFactor *= std::pow(ptrSpeed2 / std::abs(current.dy),
+                                                     cfgResistanceDirectionExponent);
                 } else {
                     resistanceFactor = 1;
                 }
@@ -611,10 +623,11 @@ int main(int argc, char **argv) {
                 XQueryPointer(display, rootWindow, &rootWindow, &childWnd, &root_x, &root_y, &win_x,
                               &win_y, &maskDummy);
 
-                pointerMoved(motionEvent->time, root_x, root_y, motionEvent->event_x,
-                             motionEvent->event_y);
+                pointerSpeedChanged(motionEvent->time, root_x, root_y, motionEvent->event_x,
+                                    motionEvent->event_y);
+                pointerPositionChanged(motionEvent->time, root_x, root_y);
                 /*
-                                pointerMoved(motionEvent->time, root_x +
+                                pointerSpeedChanged(motionEvent->time, root_x +
                    motionEvent->event_x, root_y + motionEvent->event_y,
                                     motionEvent->event_x,
                    motionEvent->event_y);*/
