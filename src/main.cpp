@@ -235,9 +235,12 @@ void updateMonitorList() {
         XRRCrtcInfo *crtc_info = XRRGetCrtcInfo(display, res, res->crtcs[j]);
         if (crtc_info->noutput) {
             monitors.push_back(
-                Monitor{crtc_info->x, crtc_info->y, crtc_info->width, crtc_info->height});
-            printf("Found monitor:%3i x:%5i y:%5i w:%5i h:%5i\n", j, crtc_info->x, crtc_info->y,
-                   crtc_info->width, crtc_info->height);
+                Monitor{crtc_info->x, crtc_info->y, crtc_info->width, crtc_info->height,
+                        createMonitorSpanWindow(crtc_info->x, crtc_info->y, crtc_info->width,
+                                                crtc_info->height)});
+            printf("Found monitor:%3i x:%5i y:%5i w:%4i h:%4i, Window %x\n", j, crtc_info->x,
+                   crtc_info->y, crtc_info->width, crtc_info->height,
+                   (int)monitors.back().inputWindow);
         }
         XFree(crtc_info);
     }
@@ -295,8 +298,8 @@ void confinePointer(const Monitor *mon) {
 
         XFlush(display);
         pointerConfined = mon->inputWindow;
-        std::cout << "Confined pointer to " << mon->x << "x" << mon->y << "-" << mon->w << "x"
-                  << mon->h << std::endl;
+        printf("Confined pointer to x:%5i y:%5i w:%4i h:%4i, Window %x\n", mon->x, mon->y, mon->w,
+               mon->h, (int)mon->inputWindow);
     }
 }
 void unconfinePointer() {
@@ -458,6 +461,16 @@ bool running;
 void reloadCfgSignal(int) { reloadCfg = true; }
 void terminateSignal(int) { running = false; }
 
+/*
+ERROR handlers
+*/
+int handleXError(Display *d, XErrorEvent *e) {
+    char errMsgBuffer[1000];
+    XGetErrorText(display, e->error_code, errMsgBuffer, sizeof(errMsgBuffer));
+    std::cerr << "Error code: " << e->error_code << ", detail: " << errMsgBuffer << std::endl;
+    return 0;
+}
+
 int main(int argc, char **argv) {
     // ---Read arguments---
     if (argc >= 2)
@@ -486,6 +499,7 @@ int main(int argc, char **argv) {
         std::cerr << "Cannot open Display! Exiting..." << std::endl;
         return -1;
     }
+    XSetErrorHandler(handleXError);
 
     rootWindow = XDefaultRootWindow(display);
     XAllowEvents(display, AsyncBoth, CurrentTime);
