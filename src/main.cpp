@@ -203,11 +203,22 @@ Window createMonitorSpanWindow(int x, int y, unsigned int w, unsigned int h) {
                                &atr                // attributes
     );
 
-    /*Atom window_type = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
-    Atom desktop = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
-    XChangeProperty(display, wnd, window_type, XA_ATOM, 32, PropModeReplace,
-                    (unsigned char *)&desktop, 1);*/
+    /*In case the window manager still interferes, make the window fullscreen*/
+    Atom wm_state = XInternAtom(display, "_NET_WM_STATE", true);
+    Atom wm_fullscreen = XInternAtom(display, "_NET_WM_STATE_FULLSCREEN", true);
+    XChangeProperty(display, wnd, wm_state, XA_ATOM, 32, PropModeReplace,
+                    (unsigned char *)&wm_fullscreen, 1);
+
+    /* Keep the window on the bottom so it's not visible or interactible when shown*/
     XLowerWindow(display, wnd);
+
+    /*In case this doesn't work due to the window manager, tell the WM to treat the window as a
+     * desktop surface. This shouldn't be an issue since this window won't be shown most of the
+     * time*/
+    Atom wm_window_type = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
+    Atom wm_desktop = XInternAtom(display, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
+    XChangeProperty(display, wnd, wm_window_type, XA_ATOM, 32, PropModeReplace,
+                    (unsigned char *)&wm_desktop, 1);
 
     return wnd;
 }
@@ -280,27 +291,27 @@ void confinePointer(const Monitor *mon) {
                      ButtonPressMask | ButtonReleaseMask | PointerMotionMask, GrabModeAsync,
                      GrabModeAsync, mon->inputWindow, None, lastPtrMoveX11Time);
 
-        // warp the pointer back into the screen just in case
-        Window childWnd;
-        int x, y, win_x, win_y;
-        unsigned int maskDummy;
-        XQueryPointer(display, rootWindow, &rootWindow, &childWnd, &x, &y, &win_x, &win_y,
-                      &maskDummy);
-        if (x < mon->x + cfgResistanceMargins)
-            x = mon->x + cfgResistanceMargins;
-        if (y < mon->y + cfgResistanceMargins)
-            y = mon->y + cfgResistanceMargins;
-        if (x > mon->x + mon->w - cfgResistanceMargins - 1)
-            x = mon->x + mon->w - cfgResistanceMargins - 1;
-        if (y > mon->y + mon->h - cfgResistanceMargins - 1)
-            y = mon->y + mon->h - cfgResistanceMargins - 1;
-        movePointer(x, y);
-
-        XFlush(display);
         pointerConfined = mon->inputWindow;
         printf("Confined pointer to x:%5i y:%5i w:%4i h:%4i, Window %x\n", mon->x, mon->y, mon->w,
                mon->h, (int)mon->inputWindow);
     }
+
+    // warp the pointer back into the screen just in case
+    Window childWnd;
+    int x, y, win_x, win_y;
+    unsigned int maskDummy;
+    XQueryPointer(display, rootWindow, &rootWindow, &childWnd, &x, &y, &win_x, &win_y, &maskDummy);
+    if (x < mon->x + cfgResistanceMargins)
+        x = mon->x + cfgResistanceMargins;
+    if (y < mon->y + cfgResistanceMargins)
+        y = mon->y + cfgResistanceMargins;
+    if (x > mon->x + mon->w - cfgResistanceMargins - 1)
+        x = mon->x + mon->w - cfgResistanceMargins - 1;
+    if (y > mon->y + mon->h - cfgResistanceMargins - 1)
+        y = mon->y + mon->h - cfgResistanceMargins - 1;
+    movePointer(x, y);
+
+    XFlush(display);
 }
 void unconfinePointer() {
     if (pointerConfined != 0) {
