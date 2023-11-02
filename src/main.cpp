@@ -22,17 +22,6 @@
 
 using namespace std::chrono;
 
-struct Monitor {
-    int x, y;
-    unsigned int w, h;
-    Window inputWindow;
-
-    bool contains(int xpos, int ypos, int margin = 0) {
-        return (xpos >= x + margin && xpos < (x + w - margin) && ypos >= y + margin &&
-                ypos < (y + h - margin));
-    }
-};
-
 struct PtrEntry {
     PtrEntry(int x, int y, float speed, float dx, float dy)
         : x(x), y(y), speed(speed), dx(dx), dy(dy) {
@@ -78,6 +67,28 @@ int inotifyCfgW;
 /*
 Display variables
 */
+struct Monitor {
+    int x, y;
+    unsigned int w, h;
+    Window inputWindow;
+
+    bool contains(int xpos, int ypos, int margin = 0) {
+        return (xpos >= x + margin && xpos < (x + w - margin) && ypos >= y + margin &&
+                ypos < (y + h - margin));
+    }
+
+    void snapPosition(int *xpos, int *ypos) {
+        if (*xpos < x + cfgResistanceMargins)
+            *xpos = x + cfgResistanceMargins;
+        if (*ypos < y + cfgResistanceMargins)
+            *ypos = y + cfgResistanceMargins;
+        if (*xpos > x + w - cfgResistanceMargins - 1)
+            *xpos = x + w - cfgResistanceMargins - 1;
+        if (*ypos > y + h - cfgResistanceMargins - 1)
+            *ypos = y + h - cfgResistanceMargins - 1;
+    }
+};
+
 Display *display;  // our display
 Window rootWindow; // root wnd of our display
 std::vector<Monitor> monitors;
@@ -225,6 +236,33 @@ Window createMonitorSpanWindow(int x, int y, unsigned int w, unsigned int h) {
     return wnd;
 }
 
+Window getWindowAt(Window parent, int x, int y) {
+    unsigned int nchildren;
+    Window retroot, retparent, *children;
+    Window child;
+    XWindowAttributes wndAtr;
+
+    Window parentDummy;
+    int root_x, root_y, win_x, win_y;
+    unsigned int maskDummy;
+    bool ret = XQueryPointer(display, parent, &parentDummy, &child, &root_x, &root_y, &win_x,
+                             &win_y, &maskDummy);
+
+    if (ret) {
+        printf("Child %x; ", (int)child);
+        if (child == 0 || child == parent) {
+            return parent;
+        }
+        child = getWindowAt(child, x, y);
+        if (child == 0) {
+            return parent;
+        }
+        return child;
+    }
+
+    return 0;
+}
+
 Monitor *getMonitorAt(int x, int y) {
     Monitor *monitor = nullptr;
     for (auto &m : monitors) {
@@ -286,6 +324,7 @@ void movePointer(int x, int y) {
 Window pointerConfined = 0;
 void confinePointer(const Monitor *mon) {
     if (pointerConfined == 0) {
+
         // show the (invisible) window so it can grab the pointer
         XMapWindow(display, mon->inputWindow);
 
@@ -305,14 +344,7 @@ void confinePointer(const Monitor *mon) {
     int x, y, win_x, win_y;
     unsigned int maskDummy;
     XQueryPointer(display, rootWindow, &rootWindow, &childWnd, &x, &y, &win_x, &win_y, &maskDummy);
-    if (x < mon->x + cfgResistanceMargins)
-        x = mon->x + cfgResistanceMargins;
-    if (y < mon->y + cfgResistanceMargins)
-        y = mon->y + cfgResistanceMargins;
-    if (x > mon->x + mon->w - cfgResistanceMargins - 1)
-        x = mon->x + mon->w - cfgResistanceMargins - 1;
-    if (y > mon->y + mon->h - cfgResistanceMargins - 1)
-        y = mon->y + mon->h - cfgResistanceMargins - 1;
+    currentMonitor->snapPosition(&x, &y);
     movePointer(x, y);
 
     XFlush(display);
@@ -321,7 +353,7 @@ void unconfinePointer() {
     if (pointerConfined != 0) {
         XUngrabPointer(display, lastPtrMoveX11Time);
         XUnmapWindow(display, pointerConfined);
-        XAllowEvents(display, SyncPointer, lastPtrMoveX11Time);
+        XAllowEvents(display, ReplayPointer, lastPtrMoveX11Time);
         XFlush(display);
         pointerConfined = 0;
         std::cout << "Unconfined pointer" << std::endl;
@@ -370,10 +402,10 @@ void pointerPositionChanged(Time time, int x, int y) {
 
     // Do nothing if we are outside any monitor
     if (currentMonitor) {
+        const auto &current = ptrMemory.back();
+
         // If the pointer tries to exit the monitor
         if (!currentMonitor->contains(x, y, cfgResistanceMargins)) {
-            const auto &current = ptrMemory.back();
-
             Monitor *newMonitor =
                 getMonitorAt(x + cfgResistanceMargins *
                                      ((x > currentMonitor->x + currentMonitor->w / 2) ? 1 : -1),
@@ -468,7 +500,9 @@ void pointerPositionChanged(Time time, int x, int y) {
                 confinePointer(currentMonitor);
             }
         } else {
-            unconfinePointer();
+            if (currentMonitor->contains(x + current.dx, y + current.dy, cfgResistanceMargins)) {
+                unconfinePointer();
+            }
             if (currentMonitor->contains(x, y, cfgResistanceMargins + 1)) {
                 onEdge = false;
             }
@@ -612,38 +646,61 @@ int main(int argc, char **argv) {
         XNextEvent(display, &xevent);
 
         // Skip this completely if sticky edges aren't enabled
-        if (cfgEnabled && XGetEventData(display, &xevent.xcookie)) {
-            XGenericEventCookie *cookie = &xevent.xcookie;
+        switch (xevent.type) {
+        case GenericEvent:
+            if (cfgEnabled && XGetEventData(display, &xevent.xcookie)) {
+                XGenericEventCookie *cookie = &xevent.xcookie;
 
-            if (cookie->extension == xiExtOpcode && cookie->evtype == XI_RawMotion) {
-                // This is the event we were looking for
-                XIDeviceEvent *motionEvent = (XIDeviceEvent *)cookie->data;
+                if (cookie->extension == xiExtOpcode && cookie->evtype == XI_RawMotion) {
+                    // This is the event we were looking for
+                    XIDeviceEvent *motionEvent = (XIDeviceEvent *)cookie->data;
 
-                Window childWnd, parentDummy;
-                int root_x, root_y, win_x, win_y;
-                unsigned int maskDummy;
-                XQueryPointer(display, rootWindow, &rootWindow, &childWnd, &root_x, &root_y, &win_x,
-                              &win_y, &maskDummy);
+                    Window childWnd, parentDummy;
+                    int root_x, root_y, win_x, win_y;
+                    unsigned int maskDummy;
+                    XQueryPointer(display, rootWindow, &rootWindow, &childWnd, &root_x, &root_y,
+                                  &win_x, &win_y, &maskDummy);
 
-                pointerSpeedChanged(motionEvent->time, root_x, root_y, motionEvent->event_x,
-                                    motionEvent->event_y);
-                pointerPositionChanged(motionEvent->time, root_x, root_y);
-                /*
-                                pointerSpeedChanged(motionEvent->time, root_x +
-                   motionEvent->event_x, root_y + motionEvent->event_y,
-                                    motionEvent->event_x,
-                   motionEvent->event_y);*/
+                    pointerSpeedChanged(motionEvent->time, root_x, root_y, motionEvent->event_x,
+                                        motionEvent->event_y);
+                    if (motionEvent->event_x != 0 || motionEvent->event_y != 0 || true) {
+                        pointerPositionChanged(motionEvent->time, root_x, root_y);
+                    }
+                }
+                XFreeEventData(display, cookie);
             }
-            XFreeEventData(display, cookie);
-        } else
-            switch (xevent.type) {
-            case ConfigureNotify:
-                updateMonitorList();
-                break;
-            default:
-                XFlush(display); // flush possible events caused by
-                                 // movePointer after we handled the movement
-            }
+            break;
+        case MotionNotify:
+            pointerPositionChanged(xevent.xbutton.time, xevent.xmotion.x_root,
+                                   xevent.xmotion.y_root);
+            break;
+        case ButtonPress:
+        case ButtonRelease: {
+            // free the pointer
+            unconfinePointer();
+
+            // replay the event to the window under sursor
+            currentMonitor->snapPosition(&xevent.xbutton.x_root, &xevent.xbutton.y_root);
+            Window cursorWindow =
+                getWindowAt(rootWindow, xevent.xbutton.x_root, xevent.xbutton.y_root);
+            printf("Window under cursor: %x\n", (int)cursorWindow);
+            Window childDummy;
+            XTranslateCoordinates(display, rootWindow, cursorWindow, xevent.xbutton.x_root,
+                                  xevent.xbutton.y_root, &xevent.xbutton.x, &xevent.xbutton.y,
+                                  &childDummy);
+            xevent.xbutton.window = cursorWindow;
+            XSendEvent(display, cursorWindow, True, ButtonPressMask | ButtonReleaseMask, &xevent);
+            XFlush(display);
+
+            // notify of the change
+            pointerPositionChanged(xevent.xbutton.time, xevent.xbutton.x_root,
+                                   xevent.xbutton.y_root);
+            break;
+        }
+        case ConfigureNotify:
+            updateMonitorList();
+            break;
+        }
     }
 
     // --Clean up---
