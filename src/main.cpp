@@ -249,8 +249,10 @@ void updateMonitorList() {
         if (crtc_info->noutput) {
             monitors.push_back(
                 Monitor{crtc_info->x, crtc_info->y, crtc_info->width, crtc_info->height,
-                        createMonitorSpanWindow(crtc_info->x, crtc_info->y, crtc_info->width,
-                                                crtc_info->height)});
+                        createMonitorSpanWindow(crtc_info->x + cfgResistanceMargins,
+                                                crtc_info->y + cfgResistanceMargins,
+                                                crtc_info->width - cfgResistanceMargins * 2,
+                                                crtc_info->height - cfgResistanceMargins * 2)});
             printf("Found monitor:%3i x:%5i y:%5i w:%4i h:%4i, Window %x\n", j, crtc_info->x,
                    crtc_info->y, crtc_info->width, crtc_info->height,
                    (int)monitors.back().inputWindow);
